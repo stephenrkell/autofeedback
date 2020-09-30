@@ -14,7 +14,7 @@ submit: LDLIBS += -ltar
 
 CFLAGS += -g
 
-submit: submit.c
+submit: submit.c $(srcroot)/lib$(MODULE)/lib$(MODULE).a
 	$(CC) -o $@ $< $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 	chmod ug+s $@
 

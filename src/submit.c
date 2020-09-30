@@ -83,16 +83,6 @@ _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 	return 1;
 }
 
-static _Bool check_sanity_test(DIR *dir, FILE *outf)
-{
-	/* We are run with the invoking user's privileges, not the lecturer's.
-	 * We simply sanity-check the submission, i.e. whether our feedback
-	 * etc could possibly work. It's allowed to do nothing. Unlike the
-	 * others, it runs before a tar file has been created, so it can
-	 * do something like check whether the tar file would be too big. */
-
-	return 1;
-}
 _Bool write_feedback_from_helper(const char *helper_filename, const char *helper_argv1,
 	DIR *dir, FILE *auditf, FILE *outf, int tarfd)
 {
@@ -173,30 +163,9 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 	// should be unreachable
 	assert(0);
 }
-static _Bool write_feedback_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd)
-{
-	const char *helper_filename = "/courses/" stringify(MODULE) "/helpers/write-feedback";
-	return write_feedback_from_helper(helper_filename, "1" /* we are project 1 */,
-		dir, auditf, outf, tarfd);
-}
-
-static _Bool finalise_submission_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd)
-{
-	/* By default, this does nothing. */
-	return 1;
-}
 
 struct project project_zero = { 0 };
 REGISTER_PROJECT(project_zero);
-
-struct project test_project_one = {
-	1,
-	"test project 1",
-	check_sanity_test,
-	write_feedback_test,
-	finalise_submission_test
-};
-REGISTER_PROJECT(test_project_one);
 
 extern struct project *__start__data_projectptrs;
 extern struct project *__stop__data_projectptrs;
