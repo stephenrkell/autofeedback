@@ -17,6 +17,7 @@
 #include <pwd.h>
 
 #include <libtar.h>
+#include "project.h"
 
 #define stringify_(t) #t
 #define stringify(t) stringify_(t)
@@ -43,21 +44,6 @@ USAGE_MSG
 ;
 
 size_t name_max = 255; /* max filename length... we get it from pathconf() */
-
-#define DESCR_LEN 80
-struct project
-{
-	unsigned n;
-	char descr[DESCR_LEN];
-	_Bool (*check_sanity)(DIR *dir, FILE *outf);
-	_Bool (*write_feedback)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
-	_Bool (*finalise_submission)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
-};
-/* Ideally we would sanity-check these by qsorting them.
- * and making indices line up with 'n'. Can't see a
- * good way to do this, though. Unless... simply require
- * it to be done already in the sanity check? i.e. qsort
- * them, then check sanity, then bail if invariant broken. */
 
 _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 {
@@ -200,27 +186,47 @@ static _Bool finalise_submission_test(DIR *dir, FILE *auditf, FILE *outf, int ta
 	return 1;
 }
 
-struct project projects[] = {
-	[0] = {},
-	[1] =  {
-		1,
-		"test project 1",
-		check_sanity_test,
-		write_feedback_test,
-		finalise_submission_test
-	}
-};
-#define NPROJECTS ((sizeof projects / sizeof projects[0]) - 1)
+struct project project_zero = { 0 };
+REGISTER_PROJECT(project_zero);
 
+struct project test_project_one = {
+	1,
+	"test project 1",
+	check_sanity_test,
+	write_feedback_test,
+	finalise_submission_test
+};
+REGISTER_PROJECT(test_project_one);
+
+extern struct project *__start__data_projectptrs;
+extern struct project *__stop__data_projectptrs;
+
+#define NPROJECTS ((&__stop__data_projectptrs - &__start__data_projectptrs) - 1)
+
+struct project **projects = &__start__data_projectptrs;
+
+static int compar_projptr(const void *projptrptr1, const void *projptrptr2)
+{
+	if (!*(struct project **)projptrptr1 || !*(struct project **)projptrptr2)
+	{
+		err(EXIT_FAILURE, "self-check: null project pointer; is the link sane?");
+	}
+	/* Compare by the project number. */
+	return (*(struct project **) projptrptr1)->n - (*(struct project **) projptrptr2)->n;
+}
 static void (__attribute__((constructor)) init_projects)(void)
 {
-
+	/* Qsort the pointers by project number, then sanity-check their numbering. */
+	qsort(&__start__data_projectptrs,
+		NPROJECTS + 1,
+		sizeof (struct project *),
+		compar_projptr);
+	for (unsigned i = 0; i <= NPROJECTS; ++i)
+	{
+		assert(&projects[i] < &__stop__data_projectptrs);
+		assert(projects[i]->n == i);
+	}
 }
-
-/* Each project in our lib will define a 'struct project'.
- * These will be collated into an array at link time.
- * For now, use a dummy. */
-extern struct project projects[];
 
 static FILE *auditf;
 static int audit_println_helper(const char *fmt, ...)
@@ -377,7 +383,7 @@ int main(int argc, char **argv)
 	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s (really: %s)", d, real_d);
 
 	/* Sanity-check the submission. */
-	_Bool success = projects[num].check_sanity(the_d, stderr);
+	_Bool success = projects[num]->check_sanity(the_d, stderr);
 	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 
 	success = write_submission_tar(the_d, auditf, stderr, submission_t);
@@ -392,8 +398,8 @@ int main(int argc, char **argv)
 	off_t o = lseek(tar_rd_fd, 0, SEEK_SET);
 	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
 
-	success = ((mode == SUBMIT) ? projects[num].finalise_submission
-		 : projects[num].write_feedback)(the_d, auditf, stderr, tar_rd_fd);
+	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
+		 : projects[num]->write_feedback)(the_d, auditf, stderr, tar_rd_fd);
 
 	if (!success) errx(EXIT_FAILURE, "failed to %s submission",
 		(mode == SUBMIT) ? "submit" : "write feedback for");
