@@ -2,6 +2,7 @@
 #include <sys/types.h>
 #include <sys/file.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <time.h>
 #include <dirent.h>
@@ -17,7 +18,8 @@
 
 #include <libtar.h>
 
-#define stringify(t) #t
+#define stringify_(t) #t
+#define stringify(t) stringify_(t)
 
 const char submissions_path_prefix[] = "/courses/" stringify(MODULE) "/submissions/";
 const char lecturer[] = stringify(LECTURER);
@@ -29,7 +31,7 @@ char *basename(const char *path);
 
 const char usage[] =
 "Usage: %s <n> <directory>\n"
-"    where <n> is a project number\n"
+"    where <n> is a project number in module" stringify(MODULE) "\n"
 "    and <directory> contains your attempt at that project\n"
 ;
 
@@ -41,8 +43,8 @@ struct project
 	unsigned n;
 	char descr[DESCR_LEN];
 	_Bool (*check_sanity)(DIR *dir, FILE *outf);
-	_Bool (*write_feedback)(DIR *dir, FILE *auditf, FILE *outf, TAR *t);
-	_Bool (*log_submission)(DIR *dir, FILE *auditf, FILE *outf, TAR *t);
+	_Bool (*write_feedback)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
+	_Bool (*finalise_submission)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
 };
 /* Ideally we would sanity-check these by qsorting them.
  * and making indices line up with 'n'. Can't see a
@@ -50,20 +52,7 @@ struct project
  * it to be done already in the sanity check? i.e. qsort
  * them, then check sanity, then bail if invariant broken. */
 
-static _Bool check_sanity_test(DIR *dir, FILE *outf)
-{
-	/* We are run with the invoking user's privileges, not the lecturer's.
-	 * We simply sanity-check the submission, i.e. whether our feedback
-	 * etc could possibly work. It's allowed to do nothing. */
-	return 1;
-}
-static _Bool write_feedback_test(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
-{
-
-	return 1;
-
-}
-static _Bool log_submission_test(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
+_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 {
 	/* tar-append every top-level regular file, keeping count of size. */
 	unsigned size = 0;
@@ -88,13 +77,119 @@ static _Bool log_submission_test(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 			/* Recall: we're chdir'd to the submission dir, so rel paths are fine */
 			tar_append_file(t, the_entry->d_name, the_entry->d_name);
 		}
-		else fprintf(outf, "Ignoring non-regular file %s\n", the_entry->d_name);
+		else
+		{
+			//fprintf(outf, "Ignoring non-regular file %s\n", the_entry->d_name);
+		}
 
 		the_entry = NULL; // just to be safe
 	}
 #ifdef USE_READDIR_R
 	free(entryp);
 #endif
+	return 1;
+}
+
+static _Bool check_sanity_test(DIR *dir, FILE *outf)
+{
+	/* We are run with the invoking user's privileges, not the lecturer's.
+	 * We simply sanity-check the submission, i.e. whether our feedback
+	 * etc could possibly work. It's allowed to do nothing. Unlike the
+	 * others, it runs before a tar file has been created, so it can
+	 * do something like check whether the tar file would be too big. */
+
+	return 1;
+}
+_Bool write_feedback_from_helper(const char *helper_filename, const char *helper_argv1,
+	DIR *dir, FILE *auditf, FILE *outf, int tarfd)
+{
+	/* We are run with the invoking user's privileges, not the lecturer's.
+	 * It's often useful to call out to a script or helper program at this
+	 * point; this is a utility function for doing so. */
+	pid_t p = fork();
+	if (p == 0)
+	{
+		/* We are the child. Set up our fds and execve the helper.
+		 * 0 (stdin)   -- the tar file
+		 * 1 (stdout)  -- the feedback stream
+		 * 2 (stderr)  -- stderr (unchanged)
+		 * 3 (auxin)   -- the directory (not super-useful, but hey)
+		 * 4 (auxout)  -- the audit log
+		 */
+		int ret = dup2(tarfd, 0);
+		if (ret == -1) err(EXIT_FAILURE, "dup2 (1)");
+		ret = dup2(fileno(outf), 1);
+		if (ret == -1) err(EXIT_FAILURE, "dup2 (2)");
+		ret = dup2(dirfd(dir), 3);
+		if (ret == -1) err(EXIT_FAILURE, "dup2 (3)");
+		ret = dup2(fileno(auditf), 4);
+		if (ret == -1) err(EXIT_FAILURE, "dup2 (4)");
+
+		/* We also weed the environment, to avoid the user's environment
+		 * doing funky things that mess with our logic. We allow
+		 * HOME and TERM, but set PATH and SHELL to sane defaults
+		 * and LANG to C. */
+		char *homestr = getenv("HOME");
+		if (!homestr) errx(EXIT_FAILURE, "no home directory?");
+		char *termstr = getenv("TERM");
+		char *environ[] = {
+			homestr - (sizeof "HOME=" - 1),
+			"PATH=/usr/bin:/bin",
+			"SHELL=/bin/sh",
+			"LANG=C",
+			termstr ? termstr : NULL,
+			NULL
+		};
+		ret = execle(helper_filename,
+			helper_filename, // yes really -- it's argv[0]
+			(char*) helper_argv1,
+			(char*) NULL, // no more arguments
+			environ);
+		err(EXIT_FAILURE, "exec of %s (%d)", helper_filename, ret);
+	}
+	else if (p != (pid_t) -1)
+	{
+		// we are the parent, and p is the child
+		pid_t w;
+		int status;
+		do
+		{
+			w = waitpid(p, &status, WUNTRACED | WCONTINUED);
+			if (w == -1)
+			{
+				err(EXIT_FAILURE, "waitpid");
+			}
+			if (WIFEXITED(status))
+			{ /* exited with status WEXITSTATUS(status) */ }
+			else if (WIFSIGNALED(status))
+			{ /* killed by signal WTERMSIG(status) */ }
+			else if (WIFSTOPPED(status))
+			{ /* stopped by signal %d\n", WSTOPSIG(status)); */ }
+			else if (WIFCONTINUED(status))
+			{ /* continued */ }
+		} while (!WIFEXITED(status) && !WIFSIGNALED(status));
+		int ret = WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
+		return (ret == 0);
+	}
+	else
+	{
+		// fork failed
+		err(EXIT_FAILURE, "forking write-feedback helper");
+	}
+
+	// should be unreachable
+	assert(0);
+}
+static _Bool write_feedback_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd)
+{
+	const char *helper_filename = "/courses/" stringify(MODULE) "/helpers/write-feedback";
+	return write_feedback_from_helper(helper_filename, "1" /* we are project 1 */,
+		dir, auditf, outf, tarfd);
+}
+
+static _Bool finalise_submission_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd)
+{
+	/* By default, this does nothing. */
 	return 1;
 }
 
@@ -105,10 +200,15 @@ struct project projects[] = {
 		"test project 1",
 		check_sanity_test,
 		write_feedback_test,
-		log_submission_test
+		finalise_submission_test
 	}
 };
 #define NPROJECTS ((sizeof projects / sizeof projects[0]) - 1)
+
+static void (__attribute__((constructor)) init_projects)(void)
+{
+
+}
 
 /* Each project in our lib will define a 'struct project'.
  * These will be collated into an array at link time.
@@ -128,7 +228,7 @@ static int audit_println_helper(const char *fmt, ...)
 	struct tm *tm_ret = gmtime_r(&tm, &the_time);
 	if (!tm_ret) err(EXIT_FAILURE, "converting time of day");
 	size_t sz = strftime(datebuf, sizeof datebuf, "%F %T", tm_ret);
-	if (sz <= 0) err(EXIT_FAILURE, "printing timeof day");
+	if (sz <= 0) err(EXIT_FAILURE, "printing time of day");
 	int ret = fprintf(auditf, "%s ", datebuf);
 	if (ret > 0)
 	{
@@ -139,6 +239,8 @@ static int audit_println_helper(const char *fmt, ...)
 	return ret;
 }
 #define audit_println(fmt, args...) audit_println_helper(fmt "\n", ##args)
+/* To ensure we log any abnormal exits, even if done by err() or other
+ * libc functions, we install an atexit function. */
 _Bool audit_success;
 void audit_exit(void)
 {
@@ -158,6 +260,7 @@ int main(int argc, char **argv)
 	unsigned num = atoi(argv[1]);
 	if (num < 1 || num > 12) errx(EXIT_FAILURE, "invalid project number: %d", num);
 	const char *d = argv[2];
+	char *real_d = realpath(d, NULL);
 
 	/* If we're doing a submission, we need a writable fd onto a tar
  	 * descriptor, and a writable fd only the activity log file. If
@@ -184,16 +287,17 @@ int main(int argc, char **argv)
 	errno = 0; // protocol for getpwuid_r
 	int ret = getpwuid_r(euid, &pwbuf, buf, bufsize, &pwret);
 	if (ret != 0) err(EXIT_FAILURE, "getpwuid_r");
-	fprintf(stderr, "Effective user is %s\n", pwret->pw_name);
+	// fprintf(stderr, "Effective user is %s\n", pwret->pw_name);
 	if (0 != strcmp(pwret->pw_name, lecturer))
 	{
-		err(EXIT_FAILURE, "internal error: bad lecturer name (%s)", pwret->pw_name);
+		err(EXIT_FAILURE, "internal error: bad lecturer name (%s, %s)",
+			pwret->pw_name, lecturer);
 	}
 	pwret = NULL;
 	errno = 0; // protocol for getpwuid_r
 	ret = getpwuid_r(ruid, &pwbuf, buf, bufsize, &pwret);
 	if (ret != 0) err(EXIT_FAILURE, "getpwuid_r");
-	fprintf(stderr, "Real user is %s\n", pwret->pw_name);
+	// fprintf(stderr, "Real user is %s\n", pwret->pw_name);
 	size_t rname_len = strlen(pwret->pw_name);
 	char submitting_user[1 + rname_len];
 	memcpy(submitting_user, pwret->pw_name, 1 + rname_len);
@@ -207,7 +311,7 @@ int main(int argc, char **argv)
 	free(audit_path);
 	if (!auditf) err(EXIT_FAILURE, "opening audit file");
 	audit_println("User %s initiated %s request on %s", submitting_user,
-		(mode == SUBMIT) ? "submission" : "feedback", d);
+		(mode == SUBMIT) ? "submission" : "feedback", real_d);
 	atexit(audit_exit);
 	ret = flock(fileno(auditf), LOCK_EX);
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
@@ -234,7 +338,7 @@ int main(int argc, char **argv)
 			tarfd = mkstemps(subpath, sizeof ".tar" - 1);
 			if (ret == -1) err(EXIT_FAILURE, "opening submission tar file %s", subpath);
 			ret = tar_fdopen(&submission_t, tarfd, subpath, NULL /* tartype */,
-				O_WRONLY, 0600, TAR_VERBOSE /* for now */);
+				O_WRONLY, 0600, (mode == SUBMIT) ? TAR_VERBOSE : 0 /* for now */);
 			if (ret != 0) err(EXIT_FAILURE, "tar-opening submission tar file %s", subpath);
 			/* if it's just a temporary, unlink it */
 			if (mode == FEEDBACK) unlink(subpath);
@@ -256,22 +360,34 @@ int main(int argc, char **argv)
 	/* We now read the user's submission using the user's privileges,
 	 * and write it to the tar file. */
 	DIR *the_d = opendir(d);
-	if (!the_d) err(EXIT_FAILURE, "opening submission directory %s", d);
+	if (!the_d) err(EXIT_FAILURE, "opening submission directory %s (really: %s)", d, real_d);
 
 	/* Also chdir to it. */
 	ret = chdir(d);
-	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s", d);
+	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s (really: %s)", d, real_d);
 
 	/* Sanity-check the submission. */
 	_Bool success = projects[num].check_sanity(the_d, stderr);
-	if (!success) err(EXIT_FAILURE, "submission at %s found to be insane", d);
+	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 
-	success = ((mode == SUBMIT) ? projects[num].log_submission
-		 : projects[num].write_feedback)(the_d, auditf, stderr, submission_t);
+	success = write_submission_tar(the_d, auditf, stderr, submission_t);
+	if (!success) err(EXIT_FAILURE, "writing tar from submission at %s (really: %s)", d, real_d);
 
-	if (!success) err(EXIT_FAILURE, "failed to %s submission",
+	int tar_rd_fd = dup(tarfd);
+	ret = tar_close(submission_t);
+	if (ret != 0) err(EXIT_FAILURE, "closing submission tar file");
+	submission_t = NULL;
+
+	/* Now re-open the tar from the same fd. */
+	off_t o = lseek(tar_rd_fd, 0, SEEK_SET);
+	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
+
+	success = ((mode == SUBMIT) ? projects[num].finalise_submission
+		 : projects[num].write_feedback)(the_d, auditf, stderr, tar_rd_fd);
+
+	if (!success) errx(EXIT_FAILURE, "failed to %s submission",
 		(mode == SUBMIT) ? "submit" : "write feedback for");
-	tar_close(submission_t);
+
 	audit_println("Request succeeded");
 	audit_success = 1;
 
@@ -279,5 +395,6 @@ int main(int argc, char **argv)
 	flock(fileno(auditf), LOCK_UN);
 	fclose(auditf);
 	closedir(the_d);
+	if (real_d) free(real_d);
 	return 0;
 }
