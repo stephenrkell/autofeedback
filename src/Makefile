@@ -7,6 +7,7 @@ LECTURER ?= srk21
 
 CFLAGS += -DMODULE=$(MODULE) -DLECTURER=$(LECTURER)
 
+submit: LDFLAGS += -static
 submit: LDFLAGS += -L$(srcroot)/lib$(MODULE)
 submit: LDFLAGS += -Wl,--whole-archive -l$(MODULE) -Wl,--no-whole-archive
 submit: LDLIBS += -ltar
