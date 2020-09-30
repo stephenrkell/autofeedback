@@ -29,10 +29,17 @@ char *basename(const char *path);
 #error "Do not include libgen.h! We require GNU basename()"
 #endif
 
-const char usage[] =
-"Usage: %s <n> <directory>\n"
-"    where <n> is a project number in module" stringify(MODULE) "\n"
+/* Macroise the usage message so that we can easily append extra bits of format string
+ * that can provide extra help when reporting usage failures. Note that the first
+ * formatted argument should be argv[0]. */
+#define USAGE_MSG_FOR_MOD(mod) \
+"Usage: %s <n> <directory>\n" \
+"    where <n> is a project number in module " stringify(mod) "\n" \
 "    and <directory> contains your attempt at that project\n"
+
+#define USAGE_MSG USAGE_MSG_FOR_MOD(MODULE)
+const char usage[] =
+USAGE_MSG
 ;
 
 size_t name_max = 255; /* max filename length... we get it from pathconf() */
@@ -257,10 +264,13 @@ int main(int argc, char **argv)
 		errx(EXIT_FAILURE, "You must invoke this program as 'submit' or 'feedback'");
 	}
 	if (argc < 2) errx(EXIT_FAILURE, usage, argv[0]);
+	if (argv[1][0] < '0' || argv[1][0] > '9') errx(EXIT_FAILURE, usage, argv[0]);
 	unsigned num = atoi(argv[1]);
 	if (num < 1 || num > 12) errx(EXIT_FAILURE, "invalid project number: %d", num);
 	const char *d = argv[2];
 	char *real_d = realpath(d, NULL);
+	if (!real_d) err(EXIT_FAILURE, USAGE_MSG "\nSomething fishy about the directory: %s",
+		argv[0], d);
 
 	/* If we're doing a submission, we need a writable fd onto a tar
  	 * descriptor, and a writable fd only the activity log file. If
