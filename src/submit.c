@@ -111,15 +111,17 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 		/* We also weed the environment, to avoid the user's environment
 		 * doing funky things that mess with our logic. We allow
 		 * HOME and TERM, but set PATH and SHELL to sane defaults
-		 * and LANG to C. */
+		 * and LANG to C. We also allow COLUMNS. */
 		char *homestr = getenv("HOME");
 		if (!homestr) errx(EXIT_FAILURE, "no home directory?");
 		char *termstr = getenv("TERM");
+		char *columnsstr = getenv("COLUMNS");
 		char *environ[] = {
 			homestr - (sizeof "HOME=" - 1),
 			"PATH=/usr/bin:/bin",
 			"SHELL=/bin/sh",
 			"LANG=C",
+			columnsstr ? columnsstr - (sizeof "COLUMNS=" - 1) : "COLUMNS=100",
 			termstr ? termstr : NULL,
 			NULL
 		};
@@ -352,7 +354,7 @@ int main(int argc, char **argv)
 	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s (really: %s)", d, real_d);
 
 	/* Sanity-check the submission. */
-	_Bool success = projects[num]->check_sanity(the_d, stderr);
+	_Bool success = projects[num]->check_sanity(the_d, stderr, projects[num]->check_sanity_arg);
 	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 
 	success = write_submission_tar(the_d, auditf, stderr, submission_t);
@@ -368,7 +370,9 @@ int main(int argc, char **argv)
 	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
 
 	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
-		 : projects[num]->write_feedback)(the_d, auditf, stderr, tar_rd_fd);
+		 : projects[num]->write_feedback)(the_d, auditf, stderr, tar_rd_fd,
+		(mode == SUBMIT) ? projects[num]->finalise_submission_arg
+         : projects[num]->write_feedback_arg);
 
 	if (!success) errx(EXIT_FAILURE, "failed to %s submission",
 		(mode == SUBMIT) ? "submit" : "write feedback for");

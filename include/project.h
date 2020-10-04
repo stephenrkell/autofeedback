@@ -8,9 +8,12 @@ struct project
 {
 	unsigned n;
 	char descr[DESCR_LEN];
-	_Bool (*check_sanity)(DIR *dir, FILE *outf);
-	_Bool (*write_feedback)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
-	_Bool (*finalise_submission)(DIR *dir, FILE *auditf, FILE *outf, int tarfd);
+	_Bool (*check_sanity)(DIR *dir, FILE *outf, void *arg);
+	void *check_sanity_arg;
+	_Bool (*write_feedback)(DIR *dir, FILE *auditf, FILE *outf, int tarfd, void *arg);
+	void *write_feedback_arg;
+	_Bool (*finalise_submission)(DIR *dir, FILE *auditf, FILE *outf, int tarfd, void *arg);
+	void *finalise_submission_arg;
 };
 
 /* Magic for making it possible to drop in projects at link time.
