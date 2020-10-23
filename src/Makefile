@@ -5,7 +5,7 @@ default: submit feedback
 MODULE ?= co557
 LECTURER ?= srk21
 
-CFLAGS += -DMODULE=$(MODULE) -DLECTURER=$(LECTURER) -I../include
+CFLAGS += -DMODULE=$(MODULE) -DLECTURER=$(LECTURER) -I../include -Wall
 
 submit: LDFLAGS += -static
 submit: LDFLAGS += -L$(srcroot)/lib$(MODULE)
