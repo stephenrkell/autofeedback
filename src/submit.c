@@ -45,12 +45,14 @@ USAGE_MSG
 
 size_t name_max = 255; /* max filename length... we get it from pathconf() */
 
-_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
+_Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
+	char *prefix, unsigned *size)
 {
-	/* tar-append every top-level regular file, keeping count of size. */
-	unsigned size = 0;
-	off_t len = offsetof(struct dirent, d_name) + name_max + 1;
+	size_t prefixlen = strlen(prefix);
+	assert(prefixlen == 0 || prefix[prefixlen - 1] == '/');
+	if (prefixlen != 0) warnx("Writing tar file, recursed into directory %s", prefix);
 #ifdef USE_READDIR_R
+	off_t len = offsetof(struct dirent, d_name) + name_max + 1;
 	struct dirent *entryp = (struct dirent *) malloc(len);
 #endif
 	struct dirent *the_entry = NULL;
@@ -64,11 +66,40 @@ _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 #ifndef _DIRENT_HAVE_D_TYPE
 #error "Must have d_type in struct dirent"
 #endif
+		// skip '.' and '..'
+		if (0 == strcmp(the_entry->d_name, ".") || 0 == strcmp(the_entry->d_name, "..")) continue;
 		// is it a regular file?
-		if (the_entry->d_type == DT_REG)
+		if (the_entry->d_type == DT_REG || the_entry->d_type == DT_DIR)
 		{
-			/* Recall: we're chdir'd to the submission dir, so rel paths are fine */
-			tar_append_file(t, the_entry->d_name, the_entry->d_name);
+			unsigned namebuf_sz = prefixlen + strlen(the_entry->d_name) + 1;
+			char namebuf[namebuf_sz + 1]; // to leave room for an extra slash!
+			ret = snprintf(namebuf, namebuf_sz, "%s%s", prefix, the_entry->d_name);
+			if (ret != namebuf_sz - 1) errx(EXIT_FAILURE, "snprintf of tar entry name");
+			if (the_entry->d_type == DT_REG)
+			{
+				struct stat s;
+				/* Recall: we're chdir'd to the submission dir,
+				 * so names should be relative to that, i.e. use the prefix. */
+				ret = fstatat(AT_FDCWD, namebuf, &s, AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
+				if (ret != 0) err(EXIT_FAILURE, "stating file %s", namebuf);
+				tar_append_file(t, namebuf, namebuf);
+			}
+			else if (the_entry->d_type == DT_DIR)
+			{
+				/* Recall: our recursive variable 'dir' is the currently-added dir,
+				 * so d_name is our path relative to that. */
+				int newdirfd = openat(dirfd(dir), the_entry->d_name, O_RDONLY);
+				if (newdirfd == -1) err(EXIT_FAILURE, "openat of directory %s", namebuf);
+				DIR *newdir = fdopendir(newdirfd);
+				if (!dir) err(EXIT_FAILURE, "opendir");
+				// recurse
+				namebuf[namebuf_sz - 1] = '/';
+				namebuf[namebuf_sz] = '\0'; /* YES this looks wrong but is correct -- see above */
+				_Bool success = recursively_add_directory(newdir, auditf, outf, t,
+					namebuf, size);
+				if (!success) break;
+			}
+			else assert(0);
 		}
 		else
 		{
@@ -81,6 +112,13 @@ _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
 	free(entryp);
 #endif
 	return 1;
+}
+
+_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
+{
+	/* tar-append every top-level regular file, keeping count of size. */
+	unsigned size = 0;
+	return recursively_add_directory(dir, auditf, outf, t, "", &size);
 }
 
 _Bool write_feedback_from_helper(const char *helper_filename, const char *helper_argv1,
@@ -244,10 +282,6 @@ int main(int argc, char **argv)
 	if (argv[1][0] < '0' || argv[1][0] > '9') errx(EXIT_FAILURE, usage, argv[0]);
 	unsigned num = atoi(argv[1]);
 	if (num < 1 || num > 12) errx(EXIT_FAILURE, "invalid project number: %d", num);
-	const char *d = argv[2];
-	char *real_d = realpath(d, NULL);
-	if (!real_d) err(EXIT_FAILURE, USAGE_MSG "\nSomething fishy about the directory: %s",
-		argv[0], d);
 
 	/* If we're doing a submission, we need a writable fd onto a tar
  	 * descriptor, and a writable fd only the activity log file. If
@@ -297,8 +331,6 @@ int main(int argc, char **argv)
 	auditf = fopen(audit_path, "a");
 	free(audit_path);
 	if (!auditf) err(EXIT_FAILURE, "opening audit file");
-	audit_println("User %s initiated %s request on %s", submitting_user,
-		(mode == SUBMIT) ? "submission" : "feedback", real_d);
 	atexit(audit_exit);
 	ret = flock(fileno(auditf), LOCK_EX);
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
@@ -338,6 +370,15 @@ int main(int argc, char **argv)
 	if (ret != 0) err(EXIT_FAILURE, "seteuid(%ld)", (long) ruid);
 	ret = setegid(rgid);
 	if (ret != 0) err(EXIT_FAILURE, "setegid(%ld)", (long) rgid);
+
+	/* Now we're the submitting user, so open their submission (the
+	 * lecturer might not have permission). */
+	const char *d = argv[2];
+	char *real_d = realpath(d, NULL);
+	if (!real_d) err(EXIT_FAILURE, USAGE_MSG "\nSomething fishy about the directory: %s",
+		argv[0], d);
+	audit_println("User %s initiated %s request on %s", submitting_user,
+		(mode == SUBMIT) ? "submission" : "feedback", real_d);
 
 	size_t tmp_name_max = pathconf(d, _PC_NAME_MAX);
 	if (tmp_name_max != -1) name_max = tmp_name_max; // else our guess stands
