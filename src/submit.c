@@ -286,6 +286,47 @@ void audit_exit(void)
 	if (!audit_success) audit_println("Request failed");
 }
 
+static void check_submission_deadline(const char *submission_path_prefix,
+	const char *submitting_user, int num)
+{
+	char *timestamp_path = NULL;
+	int ret = asprintf(&timestamp_path, "%s/deadline-%d-%s", submissions_path_prefix, num,
+		submitting_user);
+	if (ret < 0) errx(EXIT_FAILURE, "printing user deadline file path");
+	int nchars = ret; // save for later
+	struct timespec effective_deadline;
+	struct stat timestamp_file_stat;
+	ret = stat(timestamp_path, &timestamp_file_stat);
+	if (ret == 0)
+	{
+		/* This user has an extended deadline */
+		memcpy(&effective_deadline, &timestamp_file_stat.st_mtime,
+			sizeof effective_deadline);
+		time_t deadline = effective_deadline.tv_sec;
+		warnx("Your personal deadline is %s", asctime(localtime(&deadline)));
+	}
+	else
+	{
+		// chop the path
+		timestamp_path[nchars - strlen(submitting_user) - 1] = '\0';
+		ret = stat(timestamp_path, &timestamp_file_stat);
+		if (ret != 0)
+		{
+			warnx("No deadline defined at %s", timestamp_path);
+			goto out;
+		}
+		memcpy(&effective_deadline, &timestamp_file_stat.st_mtime,
+			sizeof effective_deadline);
+	}
+	time_t deadline = effective_deadline.tv_sec;
+	if (time(NULL) > deadline)
+	{
+		warnx("Deadline has passed; was %s", asctime(localtime(&deadline)));
+	}
+out:
+	free(timestamp_path);
+}
+
 int main(int argc, char **argv)
 {
 	enum { INVALID, SUBMIT, FEEDBACK } mode;
@@ -341,7 +382,9 @@ int main(int argc, char **argv)
 	memcpy(submitting_user, pwret->pw_name, 1 + rname_len);
 
 	/* We want to open the submission and/or audit files
-	 * as appropriate, then drop our privileges. */
+	 * as appropriate, then drop our privileges. We also
+	 * check for submission deadlines, because ordinary
+	 * users shouldn't have sight of extensions. */
 	char *audit_path;
 	ret = asprintf(&audit_path, "%s/%s", submissions_path_prefix, "audit.log");
 	if (ret < 0) errx(EXIT_FAILURE, "printing audit file path");
@@ -359,6 +402,7 @@ int main(int argc, char **argv)
 			ret = asprintf(&subpath, "%s/%02d-%s-XXXXXX.tar",
 				submissions_path_prefix, num, submitting_user);
 			if (ret < 0) errx(EXIT_FAILURE, "printing submission path");
+			check_submission_deadline(submissions_path_prefix, submitting_user, num);
 			goto open_it;
 		case FEEDBACK:
 			// hard-code "/tmp" for security reasons (don't trust TMPDIR)
@@ -381,6 +425,7 @@ int main(int argc, char **argv)
 			break;
 	}
 	/* We've now opened the audit file and submission file,
+	 * and checked the submission deadline,
  	 * so we can drop privileges. */
 	ret = seteuid(ruid);
 	if (ret != 0) err(EXIT_FAILURE, "seteuid(%ld)", (long) ruid);
