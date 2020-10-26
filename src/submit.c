@@ -25,6 +25,13 @@
 const char submissions_path_prefix[] = "/courses/" stringify(MODULE) "/submissions/";
 const char lecturer[] = stringify(LECTURER);
 
+#ifndef MAX_SUBMISSION_SIZE
+#define MAX_SUBMISSION_SIZE 819200 /* 800 kB */
+#endif
+
+#define audit_println(fmt, args...) audit_println_helper(fmt "\n", ##args)
+static int audit_println_helper(const char *fmt, ...);
+
 char *basename(const char *path);
 #ifdef _LIBGEN_H
 #error "Do not include libgen.h! We require GNU basename()"
@@ -46,8 +53,9 @@ USAGE_MSG
 size_t name_max = 255; /* max filename length... we get it from pathconf() */
 
 _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
-	char *prefix, unsigned *size)
+	char *prefix, unsigned *size, size_t max_size)
 {
+	_Bool success = 1;
 	size_t prefixlen = strlen(prefix);
 	assert(prefixlen == 0 || prefix[prefixlen - 1] == '/');
 	if (prefixlen != 0) warnx("Writing tar file, recursed into directory %s", prefix);
@@ -82,7 +90,15 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 				 * so names should be relative to that, i.e. use the prefix. */
 				ret = fstatat(AT_FDCWD, namebuf, &s, AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
 				if (ret != 0) err(EXIT_FAILURE, "stating file %s", namebuf);
+				if (*size + s.st_size > max_size)
+				{
+					warnx("Submission exceeded maximum size (%ld bytes)", (long) max_size);
+					audit_println("Submission exceeded maximum size (%ld bytes)", (long) max_size);
+					success = 0;
+					break;
+				}
 				tar_append_file(t, namebuf, namebuf);
+				*size += s.st_size;
 			}
 			else if (the_entry->d_type == DT_DIR)
 			{
@@ -96,8 +112,9 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 				namebuf[namebuf_sz - 1] = '/';
 				namebuf[namebuf_sz] = '\0'; /* YES this looks wrong but is correct -- see above */
 				_Bool success = recursively_add_directory(newdir, auditf, outf, t,
-					namebuf, size);
-				if (!success) break;
+					namebuf, size, max_size);
+				close(newdirfd);
+				if (!success) { success = 0; break; }
 			}
 			else assert(0);
 		}
@@ -111,14 +128,14 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 #ifdef USE_READDIR_R
 	free(entryp);
 #endif
-	return 1;
+	return success;
 }
 
-_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t)
+_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t, size_t max)
 {
-	/* tar-append every top-level regular file, keeping count of size. */
+	/* recursively add the directory tree to the tar file, keeping track of size. */
 	unsigned size = 0;
-	return recursively_add_directory(dir, auditf, outf, t, "", &size);
+	return recursively_add_directory(dir, auditf, outf, t, "", &size, max);
 }
 
 _Bool write_feedback_from_helper(const char *helper_filename, const char *helper_argv1,
@@ -134,16 +151,16 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 		 * 0 (stdin)   -- the tar file
 		 * 1 (stdout)  -- the feedback stream
 		 * 2 (stderr)  -- stderr (unchanged)
-		 * 3 (auxin)   -- the directory (not super-useful, but hey)
-		 * 4 (auxout)  -- the audit log
+		 * 7           -- the directory (not super-useful, but hey)
+		 * 8           -- the audit log
 		 */
 		int ret = dup2(tarfd, 0);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (1)");
 		ret = dup2(fileno(outf), 1);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (2)");
-		ret = dup2(dirfd(dir), 3);
+		ret = dup2(dirfd(dir), 7);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (3)");
-		ret = dup2(fileno(auditf), 4);
+		ret = dup2(fileno(auditf), 8);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (4)");
 
 		/* We also weed the environment, to avoid the user's environment
@@ -258,9 +275,9 @@ static int audit_println_helper(const char *fmt, ...)
 		 if (more_ret < 0) ret = more_ret; else ret += more_ret;
 	}
 	va_end(ap);
+	fflush(auditf);
 	return ret;
 }
-#define audit_println(fmt, args...) audit_println_helper(fmt "\n", ##args)
 /* To ensure we log any abnormal exits, even if done by err() or other
  * libc functions, we install an atexit function. */
 _Bool audit_success;
@@ -331,7 +348,6 @@ int main(int argc, char **argv)
 	auditf = fopen(audit_path, "a");
 	free(audit_path);
 	if (!auditf) err(EXIT_FAILURE, "opening audit file");
-	atexit(audit_exit);
 	ret = flock(fileno(auditf), LOCK_EX);
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
 	int tarfd = -1;
@@ -375,10 +391,17 @@ int main(int argc, char **argv)
 	 * lecturer might not have permission). */
 	const char *d = argv[2];
 	char *real_d = realpath(d, NULL);
+	/* We start audit-logging here. The realpath may have failed, so we may bail
+	 * soon, but it's good to collect data about failed invocations. */
+	audit_println("User %s initiated %s request on project %s, dir %s (really %s)",
+		submitting_user,
+		(mode == SUBMIT) ? "submission" : "feedback",
+		argv[1] /* project number as a string */,
+		d,
+		real_d);
+	atexit(audit_exit);
 	if (!real_d) err(EXIT_FAILURE, USAGE_MSG "\nSomething fishy about the directory: %s",
 		argv[0], d);
-	audit_println("User %s initiated %s request on %s", submitting_user,
-		(mode == SUBMIT) ? "submission" : "feedback", real_d);
 
 	size_t tmp_name_max = pathconf(d, _PC_NAME_MAX);
 	if (tmp_name_max != -1) name_max = tmp_name_max; // else our guess stands
@@ -398,7 +421,7 @@ int main(int argc, char **argv)
 	_Bool success = projects[num]->check_sanity(the_d, stderr, projects[num]->check_sanity_arg);
 	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 
-	success = write_submission_tar(the_d, auditf, stderr, submission_t);
+	success = write_submission_tar(the_d, auditf, stderr, submission_t, MAX_SUBMISSION_SIZE);
 	if (!success) err(EXIT_FAILURE, "writing tar from submission at %s (really: %s)", d, real_d);
 
 	int tar_rd_fd = dup(tarfd);
