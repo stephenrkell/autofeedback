@@ -421,7 +421,6 @@ int main(int argc, char **argv)
 			if (ret != 0) err(EXIT_FAILURE, "tar-opening submission tar file %s", subpath);
 			/* if it's just a temporary, unlink it */
 			if (mode == FEEDBACK) unlink(subpath);
-			free(subpath);
 			break;
 	}
 	/* We've now opened the audit file and submission file,
@@ -489,6 +488,15 @@ int main(int argc, char **argv)
 	audit_println("Request succeeded");
 	audit_success = 1;
 
+	if (mode == SUBMIT)
+	{
+		fprintf(stderr, "Your submission was successful.\nIts identifier is %s\n"
+			"To satisfy yourself that it was received, try doing:\n"
+			"    ls -l %s\n",
+			basename(subpath), subpath);
+	}
+
+	free(subpath);
 	fflush(auditf);
 	flock(fileno(auditf), LOCK_UN);
 	fclose(auditf);
