@@ -166,7 +166,8 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 		/* We also weed the environment, to avoid the user's environment
 		 * doing funky things that mess with our logic. We allow
 		 * HOME and TERM, but set PATH and SHELL to sane defaults
-		 * and LANG to C. We also allow COLUMNS. */
+		 * and LANG to C. We also allow COLUMNS. But if COLUMNS is not
+		 * set, we want to expose that to the child. */
 		char *homestr = getenv("HOME");
 		if (!homestr) errx(EXIT_FAILURE, "no home directory?");
 		char *termstr = getenv("TERM");
@@ -176,8 +177,8 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 			"PATH=/usr/bin:/bin",
 			"SHELL=/bin/sh",
 			"LANG=C",
-			columnsstr ? columnsstr - (sizeof "COLUMNS=" - 1) : "COLUMNS=100",
-			termstr ? termstr : NULL,
+			columnsstr ? columnsstr - (sizeof "COLUMNS=" - 1) : "COLUMNS_NOT_SET=1", /* HACK... */
+			termstr ? termstr : NULL, /* ... we can only have one optional var */
 			NULL
 		};
 		ret = execle(helper_filename,
@@ -384,7 +385,10 @@ int main(int argc, char **argv)
 	/* We want to open the submission and/or audit files
 	 * as appropriate, then drop our privileges. We also
 	 * check for submission deadlines, because ordinary
-	 * users shouldn't have sight of extensions. */
+	 * users shouldn't have sight of extensions. FIXME:
+	 * currently they can see the extension file because
+	 * its name is guessable, and they can stat() it
+	 * (execute permission on the directory is enough). */
 	char *audit_path;
 	ret = asprintf(&audit_path, "%s/%s", submissions_path_prefix, "audit.log");
 	if (ret < 0) errx(EXIT_FAILURE, "printing audit file path");
@@ -414,10 +418,17 @@ int main(int argc, char **argv)
 			err(EXIT_FAILURE, "internal error: unknown mode %d", mode);
 			assert(0);
 		open_it:
+			/* We drop the egid early, so that the file comes out
+			 * with the user's gid. Then they can have read permission
+			 * on their own submission. */
+			ret = setegid(rgid);
+			if (ret != 0) err(EXIT_FAILURE, "setegid(%ld)", (long) rgid);
 			tarfd = mkstemps(subpath, sizeof ".tar" - 1);
 			if (ret == -1) err(EXIT_FAILURE, "opening submission tar file %s", subpath);
+			ret = fchmod(tarfd, 0640);
+			if (ret == -1) err(EXIT_FAILURE, "chmod'ing submission tar file %s", subpath);
 			ret = tar_fdopen(&submission_t, tarfd, subpath, NULL /* tartype */,
-				O_WRONLY, 0600, (mode == SUBMIT) ? TAR_VERBOSE : 0 /* for now */);
+				O_WRONLY, 0640, (mode == SUBMIT) ? TAR_VERBOSE : 0 /* for now */);
 			if (ret != 0) err(EXIT_FAILURE, "tar-opening submission tar file %s", subpath);
 			/* if it's just a temporary, unlink it */
 			if (mode == FEEDBACK) unlink(subpath);
@@ -428,8 +439,6 @@ int main(int argc, char **argv)
  	 * so we can drop privileges. */
 	ret = seteuid(ruid);
 	if (ret != 0) err(EXIT_FAILURE, "seteuid(%ld)", (long) ruid);
-	ret = setegid(rgid);
-	if (ret != 0) err(EXIT_FAILURE, "setegid(%ld)", (long) rgid);
 
 	/* Now we're the submitting user, so open their submission (the
 	 * lecturer might not have permission). */
