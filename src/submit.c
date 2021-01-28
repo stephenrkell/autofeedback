@@ -28,6 +28,11 @@ const char lecturer[] = stringify(LECTURER);
 #ifndef MAX_SUBMISSION_SIZE
 #define MAX_SUBMISSION_SIZE 819200 /* 800 kB */
 #endif
+/* HACK: In 2020 we accepted some larger submissions before setting the max size.
+ * To allow these to be marked, set a larger limit. Change this. */
+#ifndef MAX_FEEDBACK_SIZE
+#define MAX_FEEDBACK_SIZE 8192000 /* 8000 kB */
+#endif
 
 #define audit_println(fmt, args...) audit_println_helper(fmt "\n", ##args)
 static int audit_println_helper(const char *fmt, ...);
@@ -77,13 +82,14 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 		// skip '.' and '..'
 		if (0 == strcmp(the_entry->d_name, ".") || 0 == strcmp(the_entry->d_name, "..")) continue;
 		// is it a regular file?
-		if (the_entry->d_type == DT_REG || the_entry->d_type == DT_DIR)
+		if (the_entry->d_type == DT_REG || the_entry->d_type == DT_DIR
+			|| the_entry->d_type == DT_LNK)
 		{
 			unsigned namebuf_sz = prefixlen + strlen(the_entry->d_name) + 1;
 			char namebuf[namebuf_sz + 1]; // to leave room for an extra slash!
 			ret = snprintf(namebuf, namebuf_sz, "%s%s", prefix, the_entry->d_name);
 			if (ret != namebuf_sz - 1) errx(EXIT_FAILURE, "snprintf of tar entry name");
-			if (the_entry->d_type == DT_REG)
+			if (the_entry->d_type == DT_REG || the_entry->d_type == DT_LNK)
 			{
 				struct stat s;
 				/* Recall: we're chdir'd to the submission dir,
@@ -474,7 +480,8 @@ int main(int argc, char **argv)
 	_Bool success = projects[num]->check_sanity(the_d, stderr, projects[num]->check_sanity_arg);
 	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 
-	success = write_submission_tar(the_d, auditf, stderr, submission_t, MAX_SUBMISSION_SIZE);
+	success = write_submission_tar(the_d, auditf, stderr, submission_t,
+		(mode == SUBMIT) ? MAX_SUBMISSION_SIZE : MAX_FEEDBACK_SIZE);
 	if (!success) err(EXIT_FAILURE, "writing tar from submission at %s (really: %s)", d, real_d);
 
 	int tar_rd_fd = dup(tarfd);
@@ -487,7 +494,7 @@ int main(int argc, char **argv)
 	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
 
 	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
-		 : projects[num]->write_feedback)(the_d, auditf, stderr, tar_rd_fd,
+		 : projects[num]->write_feedback)(the_d, auditf, stdout, tar_rd_fd,
 		(mode == SUBMIT) ? projects[num]->finalise_submission_arg
          : projects[num]->write_feedback_arg);
 
