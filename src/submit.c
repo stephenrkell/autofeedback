@@ -117,10 +117,10 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 				// recurse
 				namebuf[namebuf_sz - 1] = '/';
 				namebuf[namebuf_sz] = '\0'; /* YES this looks wrong but is correct -- see above */
-				_Bool success = recursively_add_directory(newdir, auditf, outf, t,
+				success &= recursively_add_directory(newdir, auditf, outf, t,
 					namebuf, size, max_size);
 				close(newdirfd);
-				if (!success) { success = 0; break; }
+				if (!success) break;
 			}
 			else assert(0);
 		}
@@ -137,6 +137,7 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 	return success;
 }
 
+// we return 1 for success
 _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t, size_t max)
 {
 	/* recursively add the directory tree to the tar file, keeping track of size. */
@@ -144,8 +145,8 @@ _Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t, size_t ma
 	return recursively_add_directory(dir, auditf, outf, t, "", &size, max);
 }
 
-_Bool write_feedback_from_helper(const char *helper_filename, const char *helper_argv1,
-	DIR *dir, FILE *auditf, FILE *outf, int tarfd)
+_Bool run_helper(const char *helper_filename, const char *helper_argv1,
+	DIR *dir, FILE *auditf, FILE *outf, int tarfd /* may be -1 */)
 {
 	/* We are run with the invoking user's privileges, not the lecturer's.
 	 * It's often useful to call out to a script or helper program at this
@@ -160,7 +161,7 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 		 * 7           -- the directory (not super-useful, but hey)
 		 * 8           -- the audit log
 		 */
-		int ret = dup2(tarfd, 0);
+		int ret = (tarfd != -1) ? dup2(tarfd, 0) : open("/dev/null", O_RDONLY);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (1)");
 		ret = dup2(fileno(outf), 1);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (2)");
@@ -224,7 +225,7 @@ _Bool write_feedback_from_helper(const char *helper_filename, const char *helper
 		err(EXIT_FAILURE, "forking write-feedback helper");
 	}
 
-	// should be unreachable
+	// should be unreachable: we handle parent, child and fork-failed cases above
 	assert(0);
 }
 
@@ -476,11 +477,7 @@ int main(int argc, char **argv)
 	ret = chdir(d);
 	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s (really: %s)", d, real_d);
 
-	/* Sanity-check the submission. */
-	_Bool success = projects[num]->check_sanity(the_d, stderr, projects[num]->check_sanity_arg);
-	if (!success) err(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
-
-	success = write_submission_tar(the_d, auditf, stderr, submission_t,
+	_Bool success = write_submission_tar(the_d, auditf, stderr, submission_t,
 		(mode == SUBMIT) ? MAX_SUBMISSION_SIZE : MAX_FEEDBACK_SIZE);
 	if (!success) err(EXIT_FAILURE, "writing tar from submission at %s (really: %s)", d, real_d);
 
@@ -488,10 +485,24 @@ int main(int argc, char **argv)
 	ret = tar_close(submission_t);
 	if (ret != 0) err(EXIT_FAILURE, "closing submission tar file");
 	submission_t = NULL;
-
 	/* Now re-open the tar from the same fd. */
 	off_t o = lseek(tar_rd_fd, 0, SEEK_SET);
 	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
+
+	/* Sanity-check the submission from the tar file. */
+	errno = 0;
+	success = projects[num]->check_sanity(the_d, auditf, stdout, tar_rd_fd,
+		projects[num]->check_sanity_arg);
+	if (!success)
+	{
+		// we don't accept insane submissions
+		int saved_errno = errno;
+		unlink(subpath);
+		audit_println("Request failed for insanity");
+		audit_success = 0;
+		errno = saved_errno;
+		((errno == 0) ? errx : err)(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
+	}
 
 	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
 		 : projects[num]->write_feedback)(the_d, auditf, stdout, tar_rd_fd,
