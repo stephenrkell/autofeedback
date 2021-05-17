@@ -26,7 +26,7 @@ const char submissions_path_prefix[] = "/courses/" stringify(MODULE) "/submissio
 const char lecturer[] = stringify(LECTURER);
 
 #ifndef MAX_SUBMISSION_SIZE
-#define MAX_SUBMISSION_SIZE 819200 /* 800 kB */
+#define MAX_SUBMISSION_SIZE 8192000 /* 800 kB */
 #endif
 /* HACK: In 2020 we accepted some larger submissions before setting the max size.
  * To allow these to be marked, set a larger limit. Change this. */

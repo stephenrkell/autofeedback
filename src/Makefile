@@ -11,6 +11,8 @@ MODULE ?= $(shell echo $(notdir $(realpath .)) | tr a-z A-Z)
 module ?= $(shell echo '$(MODULE)' | tr A-Z a-z)
 LECTURER ?= $(shell whoami)
 
+$(info module is $(module))
+
 CFLAGS += -DMODULE=$(module) -DLECTURER=$(LECTURER) -I$(srcroot)/include -Wall
 
 submit: LDFLAGS += -static
@@ -21,6 +23,11 @@ submit: LDLIBS += -ltar
 CFLAGS += -g
 
 vpath %.c $(srcroot)/src
+
+ifeq ($(shell pwd),$(srcroot)/src)
+$(info  *** You must build from a per-module directory using $(MAKE) -f)
+$(error Cannot build 'submit' from 'src'; the binary differs for every module)
+endif
 
 # the final chmod is to stop students from copying the program then
 # wondering why it doesn't work... sigh

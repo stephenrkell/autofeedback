@@ -1,13 +1,23 @@
-include config.mk
+THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 
-module := $(shell echo "$(MODULE)" | tr 'A-Z' 'a-z' )
+.PHONY: default src origin-lib
 
-.PHONY: default src lib
+ifeq ($(dir $(realpath $(THIS_MAKEFILE))),$(realpath $(shell pwd))/)
+$(info *** Building per-module libraries only)
+$(info *** To build submit/feedback programs, use $(MAKE) -f from a module-specific dir)
+default: origin-lib
+else
+default: src
+endif
 
-default: src lib
+# we build the source in pwd...
+src: origin-lib
+	$(MAKE) -f $(dir $(THIS_MAKEFILE))/src/Makefile
 
-src: lib
-	$(MAKE) -C src
-
-lib:
-	$(MAKE) -C lib$(module)
+# ... but the lib in place
+origin-lib:
+	for d in $(wildcard $(dir $(THIS_MAKEFILE))lib*[0-9]); do \
+            $(MAKE) -C $$d \
+                MODULE="$$( echo "$$d" | sed 's/.*lib//' | tr a-z A-Z )" \
+                module="$$( echo "$$d" | sed 's/.*lib//' | tr A-Z a-z )"; \
+        done
