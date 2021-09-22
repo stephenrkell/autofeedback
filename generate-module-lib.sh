@@ -21,4 +21,11 @@ code="$( echo "$1" | tr 'A-Z' 'a-z' )"
 # After this, it can be customised to the module (or not!)
 mkdir -p "$repo"/lib$code
 cp -rp "$repo"/libSKELETON/* "$repo"/lib$code/
-# FIXME: use git cp, first ensuring we are on the local branch
+git branch local-$code
+git checkout local-$code
+git add lib${code}/* lib${code}/scripts/*
+git branch -v
+git status
+echo "Created the module library in lib$code on the 'local-$code' git branch" 1>&2
+echo "Suggest merging this into a common local branch named after your institution" 1>&2
+echo "Please push any generic 'autofeedback' changes to the main branch." 1>&2
