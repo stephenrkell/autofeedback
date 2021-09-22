@@ -15,7 +15,7 @@
 #error "MODULE must be defined"
 #endif
 
-static _Bool check_sanity_test(DIR *dir, FILE *outf, void *arg)
+static _Bool check_sanity_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd, void *arg)
 {
 	/* We are run with the invoking user's privileges, not the lecturer's.
 	 * We simply sanity-check the submission, i.e. whether our feedback
@@ -31,7 +31,7 @@ static _Bool write_feedback_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd, 
 		"/usr/l/courses/" #m "/autofeedback/lib" #m "/scripts/write-feedback"
 #define _helper_filename(m) __helper_filename(m)
 	static const char helper_filename[] = _helper_filename(MODULE);
-	return write_feedback_from_helper(helper_filename, (char*) arg,
+	return run_helper(helper_filename, (char*) arg,
 		dir, auditf, outf, tarfd);
 }
 
