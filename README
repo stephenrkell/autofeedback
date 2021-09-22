@@ -37,11 +37,12 @@ library consists of an array of structures, one per project,
 each defining three callbacks that are invoked by the submission 
 program: check_sanity, write_feedback, finalise_submission.
 
-- libcoNNN/scripts/write-feedback -- you can auto-generate a libcoNNN 
-library which simply calls this script to write feedback, and does 
-no-ops for the other two callbacks (check_sanity and 
+- libcoNNN/scripts/write-feedback -- you can auto-generate (FIXME: HOW?) 
+a libcoNNN library which simply calls this script to write feedback, and 
+does no-ops for the other two callbacks (check_sanity and 
 finalise_submission). In that case, this script is the only thing you 
-have to write. It can be any executable file, and is invoked with a bunch of file descriptors open:
+have to write. It can be any executable file, and is invoked with a 
+bunch of file descriptors open:
 
 0 (stdin): the submission tar file on stdin
 1 (stdout): write feedback here
@@ -49,18 +50,20 @@ have to write. It can be any executable file, and is invoked with a bunch of fil
 7: the directory of the submission (open as a file descriptor)
 8: the audit log (where you can write messages about what's happening)
 
-
 The workflow for using it for a new module is something like:
 
-- ./clone-for-module.sh COnnn /path/to/autofeedback-coNNN
+- From this directory i.e. /path/to/autofeedback:
 
-- This clones the repo and auto-creates src/makefile (lowercase m) as 
-follows
+./generate-module-lib.sh COnnn
 
-    MODULE := COnnn
-	LECTURER := abc123 # the cloning user
+This generate the per-module-code libraries.
+It could be smarter e.g. about setting up a 'local' git branch
+i.e. the institution has a 'local' branch
+but can still push changes to the main autofeedback to the 'main' branch.
 
-- Do 'make -C /path/to/autofeedback-coNNN'.
+- From a directory named after your module, or with MODULE set,
+  do 'make -f /path/to/autofeedback/Makefile'. This will generate a 
+'submit' binary in the current directory.
 
-Now you have your submit binary. I recommend symlinking it from 
+- Now you have your submit binary. I recommend symlinking it from 
 /courses/coNNN/submit and /courses/coNNN/feedback.

@@ -10,8 +10,9 @@ else
 default: src
 endif
 
-# we build the source in pwd...
+# we build 'submit' in pwd... CHECK it can handle setuid
 src: origin-lib
+	$(dir $(THIS_MAKEFILE))/scripts/check-suidable.sh .
 	$(MAKE) -f $(dir $(THIS_MAKEFILE))/src/Makefile
 
 # ... but the lib in place
