@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# tar file on stdin
+# feedback goes to stdout
+# stderr is stderr
+# fds 3 and 4 are NOT to be used -- bash will use them itself
+# fd 7: the dirfd
+# fd 8; the audit log
+
+# the project number is argument $1
+
+. "$(dirname "$( readlink -f "${BASH_SOURCE[0]}" )" )"/funcs.sh
+
+#echo "HOME is $HOME" 1>&2
+#whoami 1>&2
+#echo "/proc/self/fd/8 is `readlink -f /proc/self/fd/8 2>&1`" 1>&2
+#echo "COLUMNS is $COLUMNS" 1>&2
+
+#. "$(dirname "$( readlink -f "$0" )" )"/funcs.sh
+
+# Since we're running interactively, we override the version of this function
+# in funcs.sh with one that actually shows
+# the student's submission at the line number the simulator is complaining about.
+audit_log_simulator_message () {
+    local msg="$1"
+    local line_num="$2" # might be empty
+    # the file, whose line number it is, should be on stdin
+    (audit_log_date_prefix; echo "Unhandled simulator message: $1" ) >&8
+    if [[ -n "$line_num" ]]; then
+        (audit_log_date_prefix; echo -n "Line from submission file was: "; line_n "$2") >&8
+    fi
+}
+
+
+
+n="$1"
+# echo "Who am I really? `id -urn`" 1>&2
+the_tar="$( mktemp )"
+cat > "$the_tar"
+extracted="$( mktemp -d )"
+cd "$extracted" && \
+tar -xf "$the_tar" && \
+fixup_extracted "$1" "$extracted" && \
+run_tests "$n" "$extracted"
+rm -f "$the_tar"
+rm -rf "$extracted"
