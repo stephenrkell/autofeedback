@@ -1,2 +1,5 @@
+syntax: glob
 src/submit
 config.mk
+*.o
+*.a
