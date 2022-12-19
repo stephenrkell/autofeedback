@@ -9,11 +9,17 @@ default: submit feedback
 # try to guess the module name from the build directory name
 MODULE ?= $(shell echo $(notdir $(realpath .)) | tr a-z A-Z)
 module ?= $(shell echo '$(MODULE)' | tr A-Z a-z)
-LECTURER ?= $(shell whoami)
+LECTURER_UID ?= $(shell id -u)
+# Kent version
+# SUBMISSIONS_PATH_PREFIX ?= /courses/$(MODULE)/submissions
+
+SUBMISSIONS_PATH_PREFIX ?= /shared/$(MODULE)/submissions
 
 $(info module is $(module))
 
-CFLAGS += -DMODULE=$(module) -DLECTURER=$(LECTURER) -I$(srcroot)/include -Wall
+CFLAGS += -DMODULE=$(module) -DLECTURER_UID=$(LECTURER_UID) \
+ -DSUBMISSIONS_PATH_PREFIX="$(SUBMISSIONS_PATH_PREFIX)" \
+ -I$(srcroot)/include -I$(srcroot)/librunt/include -Wall
 
 submit: LDFLAGS += -static
 submit: LDFLAGS += -L$(srcroot)/lib$(module)

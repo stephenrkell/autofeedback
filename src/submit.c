@@ -17,13 +17,14 @@
 #include <pwd.h>
 
 #include <libtar.h>
+#define RELF_DEFINE_STRUCTURES
+#include "relf.h"
 #include "project.h"
 
 #define stringify_(t) #t
 #define stringify(t) stringify_(t)
 
-const char submissions_path_prefix[] = "/courses/" stringify(MODULE) "/submissions/";
-const char lecturer[] = stringify(LECTURER);
+const char submissions_path_prefix[] = stringify(SUBMISSIONS_PATH_PREFIX);
 
 #ifndef MAX_SUBMISSION_SIZE
 #define MAX_SUBMISSION_SIZE 8192000 /* 800 kB */
@@ -337,6 +338,8 @@ out:
 
 int main(int argc, char **argv)
 {
+	if (argc <= 0) abort(); // be super-defensive about corrupt args
+	void *auxv __attribute__((unused)) = get_auxv(environ, &auxv);
 	enum { INVALID, SUBMIT, FEEDBACK } mode;
 	if (0 == strcmp(basename(argv[0]), "submit")) mode = SUBMIT;
 	else if (0 == strcmp(basename(argv[0]), "feedback")) mode = FEEDBACK;
@@ -361,33 +364,17 @@ int main(int argc, char **argv)
 	uid_t euid = geteuid();
 	uid_t ruid = getuid();
 	gid_t rgid = getgid();
-	struct passwd pwbuf;
-	struct passwd *pwret;
 
-	size_t bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
-	if (bufsize == -1) /* Value was indeterminate */
+	if (euid != LECTURER_UID)
 	{
-		bufsize = 16384; /* Should be more than enough */
+		err(EXIT_FAILURE, "internal error: bad lecturer uid (%u; should be %u)",
+			(unsigned) euid, (unsigned) LECTURER_UID);
 	}
-	char buf[bufsize];
-	pwret = NULL;
-	errno = 0; // protocol for getpwuid_r
-	int ret = getpwuid_r(euid, &pwbuf, buf, bufsize, &pwret);
-	if (ret != 0) err(EXIT_FAILURE, "getpwuid_r");
-	// fprintf(stderr, "Effective user is %s\n", pwret->pw_name);
-	if (0 != strcmp(pwret->pw_name, lecturer))
+	char *submitting_user = getenv("USER");
+	if (!submitting_user)
 	{
-		err(EXIT_FAILURE, "internal error: bad lecturer name (%s, %s)",
-			pwret->pw_name, lecturer);
+		err(EXIT_FAILURE, "error: USER must be set");
 	}
-	pwret = NULL;
-	errno = 0; // protocol for getpwuid_r
-	ret = getpwuid_r(ruid, &pwbuf, buf, bufsize, &pwret);
-	if (ret != 0) err(EXIT_FAILURE, "getpwuid_r");
-	// fprintf(stderr, "Real user is %s\n", pwret->pw_name);
-	size_t rname_len = strlen(pwret->pw_name);
-	char submitting_user[1 + rname_len];
-	memcpy(submitting_user, pwret->pw_name, 1 + rname_len);
 
 	/* We want to open the submission and/or audit files
 	 * as appropriate, then drop our privileges. We also
@@ -397,11 +384,11 @@ int main(int argc, char **argv)
 	 * its name is guessable, and they can stat() it
 	 * (execute permission on the directory is enough). */
 	char *audit_path;
-	ret = asprintf(&audit_path, "%s/%s", submissions_path_prefix, "audit.log");
+	int ret = asprintf(&audit_path, "%s/%s", submissions_path_prefix, "audit.log");
 	if (ret < 0) errx(EXIT_FAILURE, "printing audit file path");
 	auditf = fopen(audit_path, "a");
+	if (!auditf) err(EXIT_FAILURE, "opening audit file `%s'", audit_path);
 	free(audit_path);
-	if (!auditf) err(EXIT_FAILURE, "opening audit file");
 	ret = flock(fileno(auditf), LOCK_EX);
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
 	int tarfd = -1;
