@@ -6,11 +6,15 @@ repo="$( readlink -f "$( dirname "$0" )" )"
 # the module code
 case "$1" in
 	([cC][oO][0-9][0-9][0-9])
-		true # OK
+		true # OK -- Kent-style
+	;;
+	([3-9][A-Z][A-Z][A-Z][0-9][A-Z][A-Z0-9][A-Z0-9])
+		true # OK -- King's-style
 	;;
 	(*)
 		echo "'$1' doesn't look like a module code; should be COnnn" 1>&2
-        echo "Or for non-Computing modules, please hack the $0 script" 1>&2
+		echo "or nABCmXYZ" 1>&2
+	        echo "... or else please hack the $0 script" 1>&2
 		exit 1
 	;;
 esac

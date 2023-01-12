@@ -9,7 +9,9 @@ default: submit feedback
 # try to guess the module name from the build directory name
 MODULE ?= $(shell echo $(notdir $(realpath .)) | tr a-z A-Z)
 module ?= $(shell echo '$(MODULE)' | tr A-Z a-z)
+LECTURER ?= '"$(shell id -un)"'
 LECTURER_UID ?= $(shell id -u)
+LECTURER_GID ?= $(shell id -g)
 # Kent version
 # SUBMISSIONS_PATH_PREFIX ?= /courses/$(MODULE)/submissions
 
@@ -17,7 +19,8 @@ SUBMISSIONS_PATH_PREFIX ?= /shared/$(MODULE)/submissions
 
 $(info module is $(module))
 
-CFLAGS += -DMODULE=$(module) -DLECTURER_UID=$(LECTURER_UID) \
+CFLAGS += -DMODULE=$(module) \
+ -DLECTURER=$(LECTURER) -DLECTURER_UID=$(LECTURER_UID) -DLECTURER_GID=$(LECTURER_GID) \
  -DSUBMISSIONS_PATH_PREFIX="$(SUBMISSIONS_PATH_PREFIX)" \
  -I$(srcroot)/include -I$(srcroot)/librunt/include -Wall
 
@@ -37,9 +40,9 @@ endif
 
 # the final chmod is to stop students from copying the program then
 # wondering why it doesn't work... sigh
-submit: submit.c $(srcroot)/lib$(module)/lib$(module).a
+submit: submit.c fake-getgrpw.c $(srcroot)/lib$(module)/lib$(module).a
 	$(srcroot)/scripts/check-suidable.sh .
-	$(CC) -o $@ $< $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) -o $@ $+ $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 	chmod ug+s $@
 	chmod o-r $@
 

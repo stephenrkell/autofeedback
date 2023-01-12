@@ -17,14 +17,16 @@
 #include <pwd.h>
 
 #include <libtar.h>
-#define RELF_DEFINE_STRUCTURES
-#include "relf.h"
 #include "project.h"
 
 #define stringify_(t) #t
 #define stringify(t) stringify_(t)
 
 const char submissions_path_prefix[] = stringify(SUBMISSIONS_PATH_PREFIX);
+
+char *submitting_user; // in environ
+uid_t ruid;
+gid_t rgid;
 
 #ifndef MAX_SUBMISSION_SIZE
 #define MAX_SUBMISSION_SIZE 8192000 /* 800 kB */
@@ -339,7 +341,6 @@ out:
 int main(int argc, char **argv)
 {
 	if (argc <= 0) abort(); // be super-defensive about corrupt args
-	void *auxv __attribute__((unused)) = get_auxv(environ, &auxv);
 	enum { INVALID, SUBMIT, FEEDBACK } mode;
 	if (0 == strcmp(basename(argv[0]), "submit")) mode = SUBMIT;
 	else if (0 == strcmp(basename(argv[0]), "feedback")) mode = FEEDBACK;
@@ -362,15 +363,15 @@ int main(int argc, char **argv)
 	 * last byte. We should use file locking on the activity log file. */
 
 	uid_t euid = geteuid();
-	uid_t ruid = getuid();
-	gid_t rgid = getgid();
+	/* global! */ ruid = getuid();
+	/* global! */ rgid = getgid();
 
 	if (euid != LECTURER_UID)
 	{
 		err(EXIT_FAILURE, "internal error: bad lecturer uid (%u; should be %u)",
 			(unsigned) euid, (unsigned) LECTURER_UID);
 	}
-	char *submitting_user = getenv("USER");
+	/* global! */ submitting_user = getenv("USER");
 	if (!submitting_user)
 	{
 		err(EXIT_FAILURE, "error: USER must be set");

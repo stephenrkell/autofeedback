@@ -17,7 +17,7 @@ src: origin-lib
 
 # ... but the lib in place
 origin-lib:
-	for d in $(wildcard $(dir $(THIS_MAKEFILE))lib*[0-9]); do \
+	for d in $(wildcard $(dir $(THIS_MAKEFILE))lib*[a-z]*[0-9]*); do \
             $(MAKE) -C $$d \
                 MODULE="$$( echo "$$d" | sed 's/.*lib//' | tr a-z A-Z )" \
                 module="$$( echo "$$d" | sed 's/.*lib//' | tr A-Z a-z )"; \
