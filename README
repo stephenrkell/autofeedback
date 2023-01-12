@@ -1,8 +1,7 @@
 This is autofeedback, a somewhat generic submission and feedback system 
 originally developed by Stephen Kell for CO557 at the University of 
-Kent. It is not yet entirely institution-generic, but will gradually be 
-made more so... e.g. for now it does assume taught modules have identifiers 
-of the form 'coNNN', but this is not essential.
+Kent. It is gradually becomine slightly more institution-generic, but
+that is a work in progress.
 
 A build of the system produces a single statically linked binary 
 invokable as 'feedback' or 'submit', into which have been compiled 
@@ -72,3 +71,10 @@ autofeedback to the 'main' branch.
 - Now you have your submit binary. I recommend symlinking it from the 
 relevant place at your institution (at Kent: on raptor, 
 /courses/coNNN/submit and /courses/coNNN/feedback).
+
+Since statically linked binaries can't reliably use NSS functions in some
+system configs (e.g. using LDAP), the submission code does not use these,
+and provides a fake version of getpwnam() for libtar's benefit. The
+submitting user's name is taken from the USER environment variable,
+used to name submission files and the like. Spoofing this is harmless and
+easily detectable.
