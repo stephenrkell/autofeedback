@@ -45,10 +45,65 @@ struct project test_project_one = {
 	1,
 	"test project 1",
 	check_sanity_test,
-	NULL,
+	(void*) "6c72e548801c2512435a34bb1f2e03f8a7b10a17" /* InfOS commit string */,
 	write_feedback_test,
 	(void*) "1",
 	finalise_submission_test,
 	NULL
 };
 REGISTER_PROJECT(test_project_one);
+struct project test_project_two = {
+	2,
+	"test project 2",
+	check_sanity_test,
+	(void*) "23a5901a3a1d115f996669f94781c8f97b5cf2e0" /* InfOS commit string */,
+	write_feedback_test,
+	(void*) "2",
+	finalise_submission_test,
+	NULL
+};
+REGISTER_PROJECT(test_project_two);
+struct project test_project_three = {
+	3,
+	"test project 3",
+	check_sanity_test,
+	(void*)  "23a5901a3a1d115f996669f94781c8f97b5cf2e0" /* InfOS commit string */,
+	write_feedback_test,
+	(void*) "3",
+	finalise_submission_test,
+	NULL
+};
+REGISTER_PROJECT(test_project_three);
+struct project test_project_four = {
+	4,
+	"test project 4",
+	check_sanity_test,
+	(void*)  "23a5901a3a1d115f996669f94781c8f97b5cf2e0" /* InfOS commit string */,
+	write_feedback_test,
+	(void*) "4",
+	finalise_submission_test,
+	NULL
+};
+REGISTER_PROJECT(test_project_four);
+struct project test_project_five = {
+	5,
+	"test project 5",
+	check_sanity_test,
+	(void*)  "23a5901a3a1d115f996669f94781c8f97b5cf2e0" /* InfOS commit string */,
+	write_feedback_test,
+	(void*) "5",
+	finalise_submission_test,
+	NULL
+};
+REGISTER_PROJECT(test_project_five);
+struct project test_project_six = {
+	6,
+	"test project 6",
+	check_sanity_test,
+	(void*)  "23a5901a3a1d115f996669f94781c8f97b5cf2e0" /* InfOS commit string */,
+	write_feedback_test,
+	(void*) "6",
+	finalise_submission_test,
+	NULL
+};
+REGISTER_PROJECT(test_project_six);

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# tar file on stdin
+# patch file on stdin
 # feedback goes to stdout
 # stderr is stderr
 # fds 3 and 4 are NOT to be used -- bash will use them itself
@@ -16,7 +16,7 @@
 #echo "COLUMNS is $COLUMNS" 1>&2
 
 case "$1" in
-    (1|2|3|4|5|6|7|8|9)
+    (1|2|3|4|5|6)
         proj_n_feedback $1
     ;;
     (*)
