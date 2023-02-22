@@ -29,6 +29,9 @@ submit: LDFLAGS += -L$(srcroot)/lib$(module)
 submit: LDFLAGS += -Wl,--whole-archive -l$(module) -Wl,--no-whole-archive
 submit: LDLIBS += -ltar
 
+# the module lib dir may have a mk.inc
+-include $(srcroot)/lib$(module)/mk.inc
+
 CFLAGS += -g
 
 vpath %.c $(srcroot)/src

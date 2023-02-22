@@ -3,6 +3,7 @@
 #include <sys/file.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
 #include <dirent.h>
@@ -16,7 +17,16 @@
 #include <err.h>
 #include <pwd.h>
 
+#if defined(SUBMISSION_FORMAT_TAR)
 #include <libtar.h>
+#define SUBMISSION_FORMAT_EXT "tar"
+#define SUBMISSION_FILE_HANDLE_TYPE TAR
+#elif defined(SUBMISSION_FORMAT_GIT_DIFF)
+#define SUBMISSION_FORMAT_EXT "patch"
+#define SUBMISSION_FILE_HANDLE_TYPE FILE
+#else
+#error "No submission format defined"
+#endif
 #include "project.h"
 
 #define stringify_(t) #t
@@ -59,8 +69,8 @@ USAGE_MSG
 ;
 
 size_t name_max = 255; /* max filename length... we get it from pathconf() */
-
-_Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
+#ifdef SUBMISSION_FORMAT_TAR
+_Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, SUBMISSION_FILE_HANDLE_TYPE *t,
 	char *prefix, unsigned *size, size_t max_size)
 {
 	_Bool success = 1;
@@ -141,15 +151,77 @@ _Bool recursively_add_directory(DIR *dir, FILE *auditf, FILE *outf, TAR *t,
 }
 
 // we return 1 for success
-_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, TAR *t, size_t max)
+_Bool write_submission_tar(DIR *dir, FILE *auditf, FILE *outf, SUBMISSION_FILE_HANDLE_TYPE *t, size_t max, void *arg)
 {
 	/* recursively add the directory tree to the tar file, keeping track of size. */
 	unsigned size = 0;
 	return recursively_add_directory(dir, auditf, outf, t, "", &size, max);
 }
+#endif /* SUBMISSION_FORMAT_TAR */
+
+#if defined(SUBMISSION_FORMAT_GIT_DIFF)
+// we return 1 for success
+_Bool write_submission_git_diff(DIR *dir, FILE *auditf, FILE *outf, SUBMISSION_FILE_HANDLE_TYPE *t, size_t max, void *arg)
+{
+	/* PROBLEM: can we limit the submission size? YES, we popen and pipe to 'head' */
+	/* PROBLEM: we need to know what the relevant ancestor commit is.
+	 * This might vary by project, so it needs to be in the project struct. */
+	char *cmd;
+	int ret = asprintf(&cmd, "git diff '%s' | head -c%lu", (char*) arg, (unsigned long) max);
+	if (ret == -1) { warnx("Problem printing git command string"); return 0; }
+	FILE *diff = popen(cmd, "r");
+	free(cmd);
+	unsigned nbytes = 0;
+	char buf[1024];
+	while (!feof(diff))
+	{
+		ssize_t nread = fread(buf, 1, sizeof buf, diff);
+		if (nread > 0)
+		{
+			size_t nwritten_total = 0;
+			size_t nremaining = nread;
+			while (nwritten_total < nread)
+			{
+				size_t nwritten = fwrite(buf, 1, nremaining, t);
+				nwritten_total += nwritten; nremaining -= nwritten;
+				if (nwritten < nremaining)
+				{
+					warnx("Problem writing git diff output (remaining %d, wrote %d)", (int) nremaining, (int) nwritten);
+					if (nwritten == 0) goto out;
+				}
+			}
+		}
+		else // read nothing starting from non-EOF... that is odd
+		{
+			warnx("Problem reading git diff output (returned %d)", (int) nread);
+			goto out;
+		}
+		nbytes += nread;
+	}
+	int status;
+out:
+	status = pclose(diff);
+	/* Did we hit the maximum? If so, output a warning. */
+	if (nbytes >= max) warnx("Submission was truncated to %lu bytes", (unsigned long) max);
+	/* Did we get a non-zero exit status? */
+	if (status != 0)
+	{ warnx("git returned an error; did you specify the path of the right git repo?"); goto git_error; }
+	/* Did we get a zero-length output? */
+	if (nbytes == 0)
+	{ warnx("git returned no data; did you specify the path of the right git repo?"); goto git_error; }
+	/* Looks like success. */
+	return 1;
+git_error:
+	/* If git returned an error, err() will crash us out but will print a strerror. So
+	 * set errno to something that won't confuse the caller. */
+	errno = EINVAL;
+	return 0;
+}
+
+#endif
 
 _Bool run_helper(const char *helper_filename, const char *helper_argv1,
-	DIR *dir, FILE *auditf, FILE *outf, int tarfd /* may be -1 */)
+	DIR *dir, FILE *auditf, FILE *outf, int submfd /* may be -1 */)
 {
 	/* We are run with the invoking user's privileges, not the lecturer's.
 	 * It's often useful to call out to a script or helper program at this
@@ -164,7 +236,7 @@ _Bool run_helper(const char *helper_filename, const char *helper_argv1,
 		 * 7           -- the directory (not super-useful, but hey)
 		 * 8           -- the audit log
 		 */
-		int ret = (tarfd != -1) ? dup2(tarfd, 0) : open("/dev/null", O_RDONLY);
+		int ret = (submfd != -1) ? dup2(submfd, 0) : open("/dev/null", O_RDONLY);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (1)");
 		ret = dup2(fileno(outf), 1);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (2)");
@@ -392,20 +464,20 @@ int main(int argc, char **argv)
 	free(audit_path);
 	ret = flock(fileno(auditf), LOCK_EX);
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
-	int tarfd = -1;
+	int submfd = -1;
 	char *subpath;
-	TAR *submission_t = NULL;
+	SUBMISSION_FILE_HANDLE_TYPE *submission_hdl = NULL;
 	switch (mode)
 	{
 		case SUBMIT:
-			ret = asprintf(&subpath, "%s/%02d-%s-XXXXXX.tar",
+			ret = asprintf(&subpath, "%s/%02d-%s-XXXXXX." SUBMISSION_FORMAT_EXT,
 				submissions_path_prefix, num, submitting_user);
 			if (ret < 0) errx(EXIT_FAILURE, "printing submission path");
 			check_submission_deadline(submissions_path_prefix, submitting_user, num);
 			goto open_it;
 		case FEEDBACK:
 			// hard-code "/tmp" for security reasons (don't trust TMPDIR)
-			ret = asprintf(&subpath, "/tmp/XXXXXX.tar");
+			ret = asprintf(&subpath, "/tmp/XXXXXX." SUBMISSION_FORMAT_EXT);
 			if (ret < 0) errx(EXIT_FAILURE, "printing submission path");
 			// fall through
 			goto open_it;
@@ -418,13 +490,17 @@ int main(int argc, char **argv)
 			 * on their own submission. */
 			ret = setegid(rgid);
 			if (ret != 0) err(EXIT_FAILURE, "setegid(%ld)", (long) rgid);
-			tarfd = mkstemps(subpath, sizeof ".tar" - 1);
-			if (ret == -1) err(EXIT_FAILURE, "opening submission tar file %s", subpath);
-			ret = fchmod(tarfd, 0640);
-			if (ret == -1) err(EXIT_FAILURE, "chmod'ing submission tar file %s", subpath);
-			ret = tar_fdopen(&submission_t, tarfd, subpath, NULL /* tartype */,
+			submfd = mkstemps(subpath, sizeof "." SUBMISSION_FORMAT_EXT - 1);
+			if (ret == -1) err(EXIT_FAILURE, "opening submission "SUBMISSION_FORMAT_EXT" file %s", subpath);
+			ret = fchmod(submfd, 0640);
+			if (ret == -1) err(EXIT_FAILURE, "chmod'ing submission "SUBMISSION_FORMAT_EXT" file %s", subpath);
+#if defined(SUBMISSION_FORMAT_TAR)
+			ret = tar_fdopen(&submission_hdl, submfd, subpath, NULL /* tartype */,
 				O_WRONLY, 0640, (mode == SUBMIT) ? TAR_VERBOSE : 0 /* for now */);
-			if (ret != 0) err(EXIT_FAILURE, "tar-opening submission tar file %s", subpath);
+#else /* others are just a plain file */
+			submission_hdl = fdopen(submfd, "w+");
+#endif
+			if (ret != 0) err(EXIT_FAILURE, "opening submission "SUBMISSION_FORMAT_EXT" file %s", subpath);
 			/* if it's just a temporary, unlink it */
 			if (mode == FEEDBACK) unlink(subpath);
 			break;
@@ -457,7 +533,7 @@ int main(int argc, char **argv)
 	if (num > NPROJECTS) errx(EXIT_FAILURE, "bad project number %u", num);
 
 	/* We now read the user's submission using the user's privileges,
-	 * and write it to the tar file. */
+	 * and write it to the submission file. */
 	DIR *the_d = opendir(d);
 	if (!the_d) err(EXIT_FAILURE, "opening submission directory %s (really: %s)", d, real_d);
 
@@ -465,21 +541,34 @@ int main(int argc, char **argv)
 	ret = chdir(d);
 	if (ret != 0) err(EXIT_FAILURE, "couldn't chdir to submission directory %s (really: %s)", d, real_d);
 
-	_Bool success = write_submission_tar(the_d, auditf, stderr, submission_t,
-		(mode == SUBMIT) ? MAX_SUBMISSION_SIZE : MAX_FEEDBACK_SIZE);
-	if (!success) err(EXIT_FAILURE, "writing tar from submission at %s (really: %s)", d, real_d);
+#if defined(SUBMISSION_FORMAT_TAR)
+	/* The check_sanity_arg is assumed to be the arg needed to grok the submission. */
+	_Bool success = write_submission_tar(the_d, auditf, stderr, submission_hdl,
+		(mode == SUBMIT) ? MAX_SUBMISSION_SIZE : MAX_FEEDBACK_SIZE, projects[num]->check_sanity_arg);
+	if (!success) err(EXIT_FAILURE, "error writing tar from submission at %s (really: %s)", d, real_d);
+#elif defined(SUBMISSION_FORMAT_GIT_DIFF)
+	_Bool success = write_submission_git_diff(the_d, auditf, stderr, submission_hdl,
+		(mode == SUBMIT) ? MAX_SUBMISSION_SIZE : MAX_FEEDBACK_SIZE, projects[num]->check_sanity_arg);
+	if (!success) err(EXIT_FAILURE, "error writing git diff for submission at %s (really: %s)", d, real_d);
+#else
+#error "Unknown submission format"
+#endif
 
-	int tar_rd_fd = dup(tarfd);
-	ret = tar_close(submission_t);
-	if (ret != 0) err(EXIT_FAILURE, "closing submission tar file");
-	submission_t = NULL;
-	/* Now re-open the tar from the same fd. */
-	off_t o = lseek(tar_rd_fd, 0, SEEK_SET);
-	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission tar file");
+	int subm_rd_fd = dup(submfd);
+#ifdef SUBMISSION_FORMAT_TAR
+	ret = tar_close(submission_hdl);
+#else
+	ret = fclose(submission_hdl);
+#endif
+	if (ret != 0) err(EXIT_FAILURE, "closing submission file");
+	submission_hdl = NULL;
+	/* Now re-open the submission from the same fd. */
+	off_t o = lseek(subm_rd_fd, 0, SEEK_SET);
+	if (o != 0) err(EXIT_FAILURE, "seeking back to start of submission file");
 
-	/* Sanity-check the submission from the tar file. */
+	/* Sanity-check the submission from the file. */
 	errno = 0;
-	success = projects[num]->check_sanity(the_d, auditf, stdout, tar_rd_fd,
+	success = projects[num]->check_sanity(the_d, auditf, stdout, subm_rd_fd,
 		projects[num]->check_sanity_arg);
 	if (!success)
 	{
@@ -493,7 +582,7 @@ int main(int argc, char **argv)
 	}
 
 	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
-		 : projects[num]->write_feedback)(the_d, auditf, stdout, tar_rd_fd,
+		 : projects[num]->write_feedback)(the_d, auditf, stdout, subm_rd_fd,
 		(mode == SUBMIT) ? projects[num]->finalise_submission_arg
          : projects[num]->write_feedback_arg);
 
