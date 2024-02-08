@@ -54,6 +54,7 @@ char *basename(const char *path);
 #ifdef _LIBGEN_H
 #error "Do not include libgen.h! We require GNU basename()"
 #endif
+char *dirname(char *path);
 
 /* Macroise the usage message so that we can easily append extra bits of format string
  * that can provide extra help when reporting usage failures. Note that the first
@@ -413,12 +414,13 @@ out:
 int main(int argc, char **argv)
 {
 	if (argc <= 0) abort(); // be super-defensive about corrupt args
-	enum { INVALID, SUBMIT, FEEDBACK } mode;
+	enum { INVALID, SUBMIT, LSSUB, FEEDBACK } mode;
 	if (0 == strcmp(basename(argv[0]), "submit")) mode = SUBMIT;
 	else if (0 == strcmp(basename(argv[0]), "feedback")) mode = FEEDBACK;
+	else if (0 == strcmp(basename(argv[0]), "lssub")) mode = LSSUB;
 	if (mode == INVALID)
 	{
-		errx(EXIT_FAILURE, "You must invoke this program as 'submit' or 'feedback'");
+		errx(EXIT_FAILURE, "You must invoke this program as 'submit' or 'feedback' or 'lssub'");
 	}
 	if (argc < 2) errx(EXIT_FAILURE, usage, argv[0]);
 	if (argv[1][0] < '0' || argv[1][0] > '9') errx(EXIT_FAILURE, usage, argv[0]);
@@ -466,6 +468,7 @@ int main(int argc, char **argv)
 	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
 	int submfd = -1;
 	char *subpath;
+	char *namepat;
 	SUBMISSION_FILE_HANDLE_TYPE *submission_hdl = NULL;
 	switch (mode)
 	{
@@ -481,6 +484,19 @@ int main(int argc, char **argv)
 			if (ret < 0) errx(EXIT_FAILURE, "printing submission path");
 			// fall through
 			goto open_it;
+		case LSSUB:
+			/* This one is different. We list all the submitting user's submissions. */
+			unsetenv("PATH");
+			// namepat: '[0-9][0-9]-k2144518-*.patch'
+			ret = asprintf(&namepat, "%02d-%s-??????." SUBMISSION_FORMAT_EXT,
+				num, submitting_user);
+			if (ret < 0) errx(EXIT_FAILURE, "printing submission filename pattern");
+			execl("/usr/bin/find", "/usr/bin/find", submissions_path_prefix,
+ 				"-type", "f", "-name", namepat, "-execdir", "/bin/ls",
+				"-1d", "{}", ";", NULL);
+			//' | sort -k6 -k7 | column -t
+			err(EXIT_FAILURE, "internal error: could not execl");
+			assert(0);
 		default:
 			err(EXIT_FAILURE, "internal error: unknown mode %d", mode);
 			assert(0);
@@ -596,8 +612,14 @@ int main(int argc, char **argv)
 	{
 		fprintf(stderr, "Your submission was successful.\nIts identifier is %s\n"
 			"To satisfy yourself that it was received, try doing:\n"
-			"    ls -l %s\n",
-			basename(subpath), subpath);
+			"    ls -l %s\n"
+			"To see exactly what was received, try doing:\n"
+			"    less %s\n"
+			"You should save the identifier somewhere so you can do these again later.\n"
+			"Or do:\n"
+			"    %s/lssub %d\n"
+			"to list the identifiers of your submission(s) for this project.\n",
+			basename(subpath), subpath, subpath, dirname(argv[0]), num); // BEWARE: may modify argv[0]!
 	}
 
 	free(subpath);
