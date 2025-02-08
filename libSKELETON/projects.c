@@ -28,7 +28,7 @@ static _Bool check_sanity_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd, vo
 static _Bool write_feedback_test(DIR *dir, FILE *auditf, FILE *outf, int tarfd, void *arg)
 {
 #define __helper_filename(m) \
-		"/usr/l/courses/" #m "/autofeedback/lib" #m "/scripts/write-feedback"
+		"/shared/" #m "/autofeedback/lib" #m "/scripts/write-feedback"
 #define _helper_filename(m) __helper_filename(m)
 	static const char helper_filename[] = _helper_filename(MODULE);
 	return run_helper(helper_filename, (char*) arg,
@@ -45,7 +45,7 @@ struct project test_project_one = {
 	1,
 	"test project 1",
 	check_sanity_test,
-	NULL,
+	(void*) "abcdef1234567890abcdef1234567890abcdef12", /* FIXME: commit string */
 	write_feedback_test,
 	(void*) "1",
 	finalise_submission_test,

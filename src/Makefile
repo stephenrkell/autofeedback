@@ -19,7 +19,7 @@ SUBMISSIONS_PATH_PREFIX ?= /shared/$(MODULE)/submissions
 
 $(info module is $(module))
 
-CFLAGS += -DMODULE=$(module) \
+CFLAGS += -DMODULE=$(module) -DMODULE_LOWER=$(module) -DMODULE_UPPER=$(MODULE) \
  -DLECTURER=$(LECTURER) -DLECTURER_UID=$(LECTURER_UID) -DLECTURER_GID=$(LECTURER_GID) \
  -DSUBMISSIONS_PATH_PREFIX="$(SUBMISSIONS_PATH_PREFIX)" \
  -I$(srcroot)/include -I$(srcroot)/librunt/include -Wall

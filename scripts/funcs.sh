@@ -1,5 +1,5 @@
 # interface to write-feedback scripts:
-# tar file on stdin
+# submission file on stdin (tar, git, ...)
 # feedback goes to stdout
 # stderr is stderr
 # fds 3 and 4 are NOT to be used -- bash will use them itself

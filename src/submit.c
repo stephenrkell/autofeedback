@@ -60,9 +60,9 @@ char *dirname(char *path);
  * that can provide extra help when reporting usage failures. Note that the first
  * formatted argument should be argv[0]. */
 #define USAGE_MSG_FOR_MOD(mod) \
-"Usage: %s <n> <directory>\n" \
+"Usage: %s <n> [directory]\n" \
 "    where <n> is a project number in module " stringify(mod) "\n" \
-"    and <directory> contains your attempt at that project\n"
+"    and [directory] contains your attempt at that project (omit for lssub)\n"
 
 #define USAGE_MSG USAGE_MSG_FOR_MOD(MODULE)
 const char usage[] =
@@ -194,7 +194,7 @@ _Bool write_submission_git_diff(DIR *dir, FILE *auditf, FILE *outf, SUBMISSION_F
 		}
 		else // read nothing starting from non-EOF... that is odd
 		{
-			warnx("Problem reading git diff output (returned %d)", (int) nread);
+			warnx("Problem reading git diff output (returned %d) -- have you made any changes?", (int) nread);
 			goto out;
 		}
 		nbytes += nread;
@@ -243,8 +243,16 @@ _Bool run_helper(const char *helper_filename, const char *helper_argv1,
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (2)");
 		ret = dup2(dirfd(dir), 7);
 		if (ret == -1) err(EXIT_FAILURE, "dup2 (3)");
-		ret = dup2(fileno(auditf), 8);
-		if (ret == -1) err(EXIT_FAILURE, "dup2 (4)");
+		if (auditf)
+		{
+			ret = dup2(fileno(auditf), 8);
+			if (ret == -1) err(EXIT_FAILURE, "dup2 (4)");
+		}
+		else
+		{
+			ret = dup2(fileno(stderr), 8);
+			if (ret == -1) err(EXIT_FAILURE, "dup2 (5)");
+		}
 
 		/* We also weed the environment, to avoid the user's environment
 		 * doing funky things that mess with our logic. We allow
@@ -367,7 +375,7 @@ static int audit_println_helper(const char *fmt, ...)
 _Bool audit_success;
 void audit_exit(void)
 {
-	if (!audit_success) audit_println("Request failed");
+	if (!audit_success && auditf) audit_println("Request failed");
 }
 
 static void check_submission_deadline(const char *submission_path_prefix,
@@ -464,8 +472,15 @@ int main(int argc, char **argv)
 	auditf = fopen(audit_path, "a");
 	if (!auditf) err(EXIT_FAILURE, "opening audit file `%s'", audit_path);
 	free(audit_path);
-	ret = flock(fileno(auditf), LOCK_EX);
-	if (ret != 0) err(EXIT_FAILURE, "locking audit file");
+	ret = flock(fileno(auditf), LOCK_EX | LOCK_NB);
+	if (ret != 0) err(EXIT_FAILURE, "locking audit file (try again in a minute?)");
+	/* Problem: when do we unlock the audit file?
+	 * Currently, only when we reach the end of main().
+	 * For 'submit' this is fine.
+	 * If we do an exec(), e.g. for 'lssub', this is never hit and so
+	 * it is never explicitly unlocked, i.e. we rely on process cleanup.
+	 * For 'feedback', it is OK but ideally we'd release it sooner.
+	 */
 	int submfd = -1;
 	char *subpath;
 	char *namepat;
@@ -597,35 +612,55 @@ int main(int argc, char **argv)
 		((errno == 0) ? errx : err)(EXIT_FAILURE, "submission at %s (really: %s) found to be insane", d, real_d);
 	}
 
-	success = ((mode == SUBMIT) ? projects[num]->finalise_submission
-		 : projects[num]->write_feedback)(the_d, auditf, stdout, subm_rd_fd,
-		(mode == SUBMIT) ? projects[num]->finalise_submission_arg
-         : projects[num]->write_feedback_arg);
-
-	if (!success) errx(EXIT_FAILURE, "failed to %s submission",
-		(mode == SUBMIT) ? "submit" : "write feedback for");
-
-	audit_println("Request succeeded");
-	audit_success = 1;
-
-	if (mode == SUBMIT)
+	switch (mode)
 	{
-		fprintf(stderr, "Your submission was successful.\nIts identifier is %s\n"
-			"To satisfy yourself that it was received, try doing:\n"
-			"    ls -l %s\n"
-			"To see exactly what was received, try doing:\n"
-			"    less %s\n"
-			"You should save the identifier somewhere so you can do these again later.\n"
-			"Or do:\n"
-			"    %s/lssub %d\n"
-			"to list the identifiers of your submission(s) for this project.\n",
-			basename(subpath), subpath, subpath, dirname(argv[0]), num); // BEWARE: may modify argv[0]!
+		case SUBMIT:
+			success = projects[num]->finalise_submission(
+				the_d, auditf, stdout, subm_rd_fd,
+				projects[num]->finalise_submission_arg);
+			if (!success) errx(EXIT_FAILURE, "failed to submit"); // exits
+			audit_println("Request succeeded");
+			audit_success = 1;
+			fprintf(stderr, "Your submission was successful.\nIts identifier is %s\n"
+				"To satisfy yourself that it was received, try doing:\n"
+				"    ls -l %s\n"
+				"To see exactly what was received, try doing:\n"
+				"    less %s\n"
+				"You should save the identifier somewhere so you can do these again later.\n"
+				"Or do:\n"
+				"    %s/lssub %d\n"
+				"to list the identifiers of your submission(s) for this project.\n",
+				basename(subpath), subpath, subpath, dirname(argv[0]), num); // BEWARE: may modify argv[0]!
+			break;
+		case FEEDBACK:
+			/* We close the audit file early, to avoid hanging on to the
+			 * lock. */
+			audit_println("Delegating to write-feedback handling");
+			fflush(auditf);
+			flock(fileno(auditf), LOCK_UN);
+			fclose(auditf);
+			auditf = NULL;
+			success = projects[num]->write_feedback(
+				the_d, auditf, stdout, subm_rd_fd,
+			        projects[num]->write_feedback_arg);
+			if (!success)
+			{
+				errx(EXIT_FAILURE, "failed to write feedback for submission");
+				// exits
+			}
+			//audit_println("Request succeeded");
+			audit_success = 1;
+			break;
+		default: errx(EXIT_FAILURE, "BUG: should not reach here!"); break;
 	}
 
 	free(subpath);
-	fflush(auditf);
-	flock(fileno(auditf), LOCK_UN);
-	fclose(auditf);
+	if (auditf)
+	{
+		fflush(auditf);
+		flock(fileno(auditf), LOCK_UN);
+		fclose(auditf);
+	}
 	closedir(the_d);
 	if (real_d) free(real_d);
 	return 0;
